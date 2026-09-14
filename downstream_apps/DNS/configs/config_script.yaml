@@ -43,7 +43,7 @@ data:
   time_delta_target_minutes: 60   # Step size (minutes) between forecast frames
 
   # -- Downstream label alignment (flare catalog → Surya index) --
-  flare_index_path: ../data/Hinode_Flare_Catalogue_with_cells.csv
+  flare_index_path: ../data/Hinode_Flare_Catalogue_with_cells_no_flare.csv
   ds_time_column: start      # Column in the flare catalog used as the event timestamp
   ds_time_tolerance: 4d           # Max allowed gap between catalog and Surya timestamps
   ds_match_direction: forward     # "forward": use solar state *before* the flare (causal)
