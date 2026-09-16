@@ -70,7 +70,7 @@ class BrightestCellModel(nn.Module):
     def __init__(
         self,
         channel_order: list[str],
-        channel: str = "aia94",
+        channel: str = "aia304",
         no_flare_threshold: float | None = None,
         cell_map: np.ndarray | None = None,
     ):
