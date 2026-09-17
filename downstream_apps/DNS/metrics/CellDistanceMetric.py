@@ -11,7 +11,7 @@ metric is the Chebyshev distance between the predicted and actual cell's (row, c
 position. Class 0 has no grid position, so any mismatch between "no flare" and a real cell is
 scored as the grid's max distance (the diagonal); an exact 0-vs-0 match is distance 0.
 
-Four metric sets, selected by mode at construction time (mirrors template_metrics.FlareMetrics):
+Five metric sets, selected by mode at construction time (mirrors template_metrics.FlareMetrics):
 - "train_loss"    — differentiable *soft* distance: the expected distance under
                     softmax(preds), so it carries gradient back to preds even where the hard,
                     argmax-based distance below does not (only the decision boundary moves
@@ -20,9 +20,18 @@ Four metric sets, selected by mode at construction time (mirrors template_metric
 - "val_loss"      — the quantity logged as `val_loss` and used to select checkpoints. Uses the
                     literal hard distance (argmax(preds) vs target) for an interpretable,
                     non-differentiable evaluation number.
-- "train_metrics" — hard distance, reported only.
-- "val_metrics"   — hard distance, reported only. Does NOT influence checkpoint selection —
-                    "val_loss" does.
+- "train_metrics" — hard distance *and* accuracy, reported only.
+- "val_metrics"   — hard distance *and* accuracy, reported only. Does NOT influence checkpoint
+                    selection — "val_loss" does.
+- "accuracy"      — standalone accuracy alone (see below), for callers that want just that
+                    number without also computing grid_distance.
+
+Accuracy is derived from the same hard distance as "val_loss"/"train_metrics", not from a
+separate argmax(preds) == target check: a sample counts as correct iff its hard grid distance
+is exactly 0. Distinct classes never share a grid position (two different real cells are at
+least 1 apart; a real cell vs. "no flare" is the grid's max distance), so distance == 0 is
+equivalent to an exact class match — accuracy is just that same distance computation viewed as
+a hit/miss rate instead of an average magnitude.
 
 Shape contract: preds is (B, num_classes) unnormalized scores, as produced by
 BrightestCellModel.forward / BrightestCellTrainedThresholdModel.forward; target is (B,) or
@@ -35,7 +44,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
-Mode = Literal["train_loss", "val_loss", "train_metrics", "val_metrics"]
+Mode = Literal["train_loss", "val_loss", "train_metrics", "val_metrics", "accuracy"]
 
 
 def build_distance_matrix(grid_rows: int = 8, grid_cols: int = 8) -> torch.Tensor:
@@ -70,7 +79,8 @@ class CellDistanceMetric:
     def __init__(self, mode: Mode, grid_rows: int = 8, grid_cols: int = 8) -> None:
         """
         Args:
-            mode: One of "train_loss", "val_loss", "train_metrics", or "val_metrics".
+            mode: One of "train_loss", "val_loss", "train_metrics", "val_metrics", or
+                "accuracy".
             grid_rows: Number of rows in the heliographic grid.
             grid_cols: Number of columns in the heliographic grid.
         """
@@ -130,14 +140,35 @@ class CellDistanceMetric:
     def train_metrics(
         self, preds: torch.Tensor, target: torch.Tensor
     ) -> tuple[dict[str, torch.Tensor], list[float]]:
-        """Hard grid distance, reported only."""
-        return {"grid_distance": self._hard_distance(preds, target).mean()}, [1.0]
+        """Hard grid distance and exact-match accuracy, reported only."""
+        distance = self._hard_distance(preds, target)
+        return {
+            "grid_distance": distance.mean(),
+            "accuracy": (distance == 0).float().mean(),
+        }, [1.0, 1.0]
 
     def val_metrics(
         self, preds: torch.Tensor, target: torch.Tensor
     ) -> tuple[dict[str, torch.Tensor], list[float]]:
-        """Hard grid distance, reported only. Does NOT influence checkpoint selection."""
-        return {"grid_distance": self._hard_distance(preds, target).mean()}, [1.0]
+        """Hard grid distance and exact-match accuracy, reported only. Does NOT influence
+        checkpoint selection."""
+        distance = self._hard_distance(preds, target)
+        return {
+            "grid_distance": distance.mean(),
+            "accuracy": (distance == 0).float().mean(),
+        }, [1.0, 1.0]
+
+    def accuracy(
+        self, preds: torch.Tensor, target: torch.Tensor
+    ) -> tuple[dict[str, torch.Tensor], list[float]]:
+        """Exact-match accuracy alone: fraction of samples with hard grid distance 0.
+
+        train_metrics()/val_metrics() already include this under the same key, so this
+        mode exists for callers that want just accuracy without also computing
+        grid_distance.
+        """
+        distance = self._hard_distance(preds, target)
+        return {"accuracy": (distance == 0).float().mean()}, [1.0]
 
     def __call__(
         self, preds: torch.Tensor, target: torch.Tensor
@@ -173,6 +204,10 @@ class CellDistanceMetric:
             case "val_metrics":
                 with torch.no_grad():
                     return self.val_metrics(preds, target)
+
+            case "accuracy":
+                with torch.no_grad():
+                    return self.accuracy(preds, target)
 
             case _:
                 raise NotImplementedError(
